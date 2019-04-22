@@ -1,0 +1,62 @@
+#! /bin/sh
+# one-liner to quickly generate certs
+# props to StackOverflow (as always) 
+# https://stackoverflow.com/a/51417561
+# and 
+# https://www.shellhacks.com/create-csr-openssl-without-prompt-non-interactive/
+# (note use of * for wildcard)
+# https://github.com/wekan/wekan/wiki/Traefik-and-self-signed-SSL-certs
+# https://crypto.stackexchange.com/questions/26591/tls-encryption-with-a-self-signed-pki-and-python-s-asyncio-module
+# https://jimfrenette.com/2018/03/ssl-certificate-authority-for-docker-and-traefik/
+
+info='\n \e[46m - \e[49m'
+ok='\n \e[42m + \e[49m'
+error='\n \e[41m ! \e[49m'
+
+CERTS_FOLDER=/certs
+KEY_SIZE=2048
+
+# Remove existing structure and recreate if can't find a CA key
+if [ ! -f "$CERTS_FOLDER/$MY_DOMAIN/ca-key.key" ]; then
+    echo -e "$info Creating $CERTS_FOLDER/$MY_DOMAIN to store certs"
+    # Cleanup
+    mkdir -p $CERTS_FOLDER/$MY_DOMAIN
+    rm -rf $CERTS_FOLDER/$MY_DOMAIN/*
+
+    # Generate key and self-signed certificate for RootCA
+    echo -e "$info Generating key and self-signed cert for RootCA"
+    openssl req -x509 -newkey rsa:$KEY_SIZE -keyout $CERTS_FOLDER/$MY_DOMAIN/ca-key.key \
+        -out $CERTS_FOLDER/$MY_DOMAIN/ca-cert.pem -days 3650 -sha256 -nodes \
+        -subj "/CN=*.$MY_DOMAIN"
+    echo -e "$ok RootCA cert @ $CERTS_FOLDER/$MY_DOMAIN/ca-cert.pem"
+fi
+
+function gen_cert() {
+    host=$1
+    echo -e "$info Creating cert for $host"
+    # Create directory
+    fqdn="$host.$MY_DOMAIN"
+    dir="$CERTS_FOLDER/$MY_DOMAIN/$fqdn"
+    mkdir -p $dir && rm -rf $dir/*
+    # Generate key and CSR for host
+    openssl genrsa -out $dir/privkey.pem $KEY_SIZE
+    openssl req -new -key $dir/privkey.pem -out $dir/$host.csr \
+        -subj "/CN=$fqdn"
+    # Sign it and remove CSR
+    openssl x509 -CA $CERTS_FOLDER/$MY_DOMAIN/ca-cert.pem \
+        -CAkey $CERTS_FOLDER/$MY_DOMAIN/ca-key.key -CAcreateserial \
+        -req -in $dir/$host.csr -out $dir/cert.pem -days 365
+    rm $dir/$host.csr
+    # Create bundle
+    cat $dir/cert.pem $CERTS_FOLDER/$MY_DOMAIN/ca-cert.pem > $dir/fullchain.pem
+    # Verify
+    openssl verify -CAfile $CERTS_FOLDER/$MY_DOMAIN/ca-cert.pem $dir/fullchain.pem
+    echo -e "$ok Bundle available @ $dir/fullchain.pem"
+}
+
+# Generate certs for subdomains
+# pass these in as arguments to the Docker run command
+for var in "$@"
+do
+    gen_cert "$var"
+done
